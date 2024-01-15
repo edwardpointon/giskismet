@@ -10,3 +10,5 @@ GISKismet supports Kismet-newcore and Kismet-devel.
 Let me know what you think.
 
 Joshua D. Abraham (jabra@spl0it.org)
+
++ improved kml output when GPS isn't fully complete as you're driving 100mph
