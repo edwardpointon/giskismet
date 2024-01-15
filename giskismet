@@ -2,11 +2,13 @@
 #
 # Copyright (C) 2009-2010 Joshua D. Abraham < jabra@spl0it.org >
 #
+# Updated by edwardp to take GPS values (including average) rather than assume zero
+#
 # This program is released under the terms of the GNU General Public License
 # (GPL), which is distributed with this software in the file "COPYING".
 # The GPL specifies the terms under which users may copy and use this software.
 #
-# GISKismet 0.02
+# GISKismet 0.02-edward
 #
 use strict;
 use warnings;
@@ -70,8 +72,9 @@ my ( $doc, $xpc );
 sub output {
     my ( $filename, $output ) = @_;
     if ( -e $filename ) {                # file exists
-        print "File already exists, do you want to overwrite it? [Y|N] ";
-        chomp( my $overwrite = <STDIN> );
+        #print "File already exists, do you want to overwrite it? [Y|N] ";
+        #chomp( my $overwrite = <STDIN> );
+	my $overwrite = 'y'; # always overwrite meh
         if ( $overwrite eq 'y' || $overwrite eq 'Y' ) {
             open FILE, '>', $filename
                 or die "Having trouble opening $filename anyway\n";
@@ -85,6 +88,7 @@ sub output {
         open FILE, '>', $filename
             or die "Having trouble opening $filename\n";
         print FILE $output;
+	print "Successfully wrote to $filename\n";
     }
 
     close(FILE);
@@ -150,6 +154,8 @@ sub create_wireless_table {
                 GPSBestLat float NULL,
                 GPSBestLon float NULL,
                 GPSBestAlt float NULL,
+                GPSAvgLat float NULL,
+                GPSAvgLon float NULL,
                 DataSize INTEGER NULL,
                 IPType text default NULL,
                 IP text default  NULL)"
@@ -567,6 +573,10 @@ if ( $options{xml} ) {
             $node{'GPSBestLat'} = return_evalue( $wn_gps, 'peak-lat' );
             $node{'GPSBestLon'} = return_evalue( $wn_gps, 'peak-lon' );
             $node{'GPSBestAlt'} = return_evalue( $wn_gps, 'peak-alt' );
+
+            $node{'GPSAvgLat'} = return_evalue( $wn_gps, 'avg-lat' );
+            $node{'GPSAvgLon'} = return_evalue( $wn_gps, 'avg-lon' );
+            #$node{'GPSAvgAlt'} = return_evalue( $wn_gps, 'avg-alt' );
         }
 		elsif ( $options{ignoregps} ) {
             $node{'GPSMinLat'} = 0;
@@ -629,7 +639,7 @@ if ( $options{xml} ) {
 
         if ( $node{'NetType'} ne "infrastructure" ) {
 			next;
-        } elsif ( ( !$options{ignoregps} ) and ( $node{'GPSBestLat'} == 0 or $node{'GPSBestLat'} == 0 ) )
+        } elsif ( ( !$options{ignoregps} ) and ( $node{'GPSBestLat'} == 0 or $node{'GPSBestLon'} == 0 ) ) # fix
         {
             next;
         }
@@ -652,7 +662,7 @@ if ( $options{xml} ) {
 
         my $insert = $dbh->prepare(
             'INSERT INTO wireless VALUES
-            (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)'
+            (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)'
         );
         if ( $options{debug} > 2 ) {
             foreach my $key ( sort keys %node ) {
@@ -679,7 +689,9 @@ if ( $options{xml} ) {
             $node{'GPSMaxLat'},   $node{'GPSMaxLon'},
             $node{'GPSMaxAlt'},   $node{'GPSMaxSpd'},
             $node{'GPSBestLat'},  $node{'GPSBestLon'},
-            $node{'GPSBestAlt'},  $node{'DataSize'},
+            $node{'GPSBestAlt'},  
+            $node{'GPSAvgLat'},  $node{'GPSAvgLon'},
+	    $node{'DataSize'},
             $node{'IPType'},      $node{'IP'}
         ) or die "Error inserting AP: $!\n";
 
@@ -922,12 +934,17 @@ if ( $options{query} ) {
         "BestSignal",  "BestNoise",  "GPSMinLat",  "GPSMinLon",
         "GPSMinAlt",   "GPSMinSpd",  "GPSMaxLat",  "GPSMaxLon",
         "GPSMaxAlt",   "GPSMaxSpd",  "GPSBestLat", "GPSBestLon",
-        "GPSBestAlt",  "DataSize",   "IPType",     "IP"
+        "GPSBestAlt",  "GPSAvgLat",  "GPSAvgLon",  "DataSize", 
+	"IPType",     "IP"
     );
 
     if ( $options{query} ) {
         my @data = @{ runSql( $options{query} ) };
+	my ($gpsfail,$gpsok) = (0,0);
+	print "Running query/extract ...\n";
         foreach my $i (@data) {
+	    $| = 1;
+	    print ".";
             my $num     = 0;
             my $counter = 0;
             my $color;
@@ -938,8 +955,36 @@ if ( $options{query} ) {
             if ( $node{'NetType'} ne "infrastructure" ) {
                 next;
             }
-            if ( $node{'GPSBestLat'} == 0 or $node{'GPSBestLat'} == 0 ) {
-                next;
+            if ( $node{'GPSBestLat'} == 0) {
+		if ( $node{'GPSMinLat'} != 0 ) { $node{'GPSBestLat'} = $node{'GPSMinLat'};
+			#print "Used Min: '" . $node{'GPSMinLat'} . "' and '" . $node{'GPSBestLat'} . "'\n";
+			$gpsok++;
+		} elsif ( $node{'GPSMaxLat'} != 0 ) { $node{'GPSBestLat'} = $node{'GPSMaxLat'};
+			#print "Used Max: '" . $node{'GPSMaxLat'} . "' and '" . $node{'GPSBestLat'} . "'\n";
+		} elsif ( $node{'GPSAvgLat'} != 0 ) { $node{'GPSBestLat'} = $node{'GPSAvgLat'};
+			#print "Used Avg: '" . $node{'GPSAvgLat'} . "' and '" . $node{'GPSBestLat'} . "'\n";
+			$gpsok++;
+		} else { # fixme ideally we should re-process previously seen BSSID's and update GPS coords...
+			#print "Cannot determine GPSBestLat for $node{'ESSID'} - skipping\n"; 
+			$gpsfail++;
+			next; 
+		}
+            }
+            if ( $node{'GPSBestLon'} == 0 ) {
+		if ( $node{'GPSMinLon'} != 0 ) { $node{'GPSBestLon'} = $node{'GPSMinLon'};
+			#print "Used Min: '" . $node{'GPSMinLon'} . "' and '" . $node{'GPSBestLon'} . "'\n";
+			$gpsok++;
+		} elsif ( $node{'GPSMaxLon'} != 0 ) { $node{'GPSBestLon'} = $node{'GPSMaxLon'};
+			#print "Used Max: '" . $node{'GPSMaxLon'} . "' and '" . $node{'GPSBestLon'} . "'\n";
+			$gpsok++;
+		} elsif ( $node{'GPSAvgLon'} != 0 ) { $node{'GPSBestLon'} = $node{'GPSAvgLon'};
+			#print "Used Avg: '" . $node{'GPSAvgLon'} . "' and '" . $node{'GPSBestLon'} . "'\n";
+			$gpsok++;
+		} else { # fixme ideally we should re-process previously seen BSSID's and update GPS coords...
+			#print "Cannot determine GPSBestLon for $node{'ESSID'} - skipping\n"; 
+			$gpsfail++;
+			next; 
+		}
             }
             $node{'ESSID'} =~ s/\</_/g;
             $node{'ESSID'} =~ s/\>/_/g;
@@ -1048,6 +1093,7 @@ if ( $options{query} ) {
             $kml .= "  </Placemark>\n";
             $counter = $counter + 1;
         }
+    print "\nGPS missing on $gpsfail nodes, $gpsok nodes OK (" . int((($gpsok/$gpsfail)*100)) . ")% - for query: '" . $options{query} . "'\n";
     }
     else {
 
@@ -1096,12 +1142,12 @@ if ( $options{query} ) {
     $kml .= "</kml>\n";
 
     if ( $options{output} ) {
-
         output( $options{output}, $kml );
     }
     else {
         print $kml;
     }
+
 }
 
 sub print_avalue {
